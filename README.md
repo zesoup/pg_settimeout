@@ -11,13 +11,14 @@ executing process to a database (it's currently hardcoded to postgres).
 ## Example Usage:
 
 
-    create extension pg_settimeout;
+    CREATE EXTENSION  pg_settimeout;
 
-    create table loghere(id serial primary key, pid int, status text);
+    CREATE TABLE loghere(id serial primary key, pid int, status text);
 
     CREATE OR REPLACE FUNCTION nonstop() RETURNS integer AS $function$
          BEGIN
-                insert into loghere(pid, status) values ( (select pg_settimeout($$
+                INSERT INTO loghere(pid, status) VALUES ( (select pg_settimeout(
+                $$
                 UPDATE loghere SET status = 'DONE' WHERE pid=pg_backend_pid() ;      
                 $$,10)), 'planned');
                 
