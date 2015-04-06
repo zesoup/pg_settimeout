@@ -145,14 +145,14 @@ void pg_settimeout_main( Datum params ) {
     getTask (segment);
 
 
-    BackgroundWorkerInitializeConnection("postgres", NULL);
-
     ResetLatch(&signalLatch);
 
     rc = WaitLatch(&signalLatch,
                    WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
                    _task->timeout*1000);
     ResetLatch(&signalLatch);
+    BackgroundWorkerInitializeConnection("postgres", NULL);
+
 
     if (rc & WL_POSTMASTER_DEATH)
         proc_exit(1);
