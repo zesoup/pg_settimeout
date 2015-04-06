@@ -9,11 +9,11 @@ Currently misses many things, e.G. a proper overview of the running processes or
 executing process to a database (it's currently hardcoded to postgres).
 
 ## Example Usage:
-create extension pg_settimeout;
 
+
+    create extension pg_settimeout;
 
     create table loghere(id serial primary key, pid int, status text);
-
 
     CREATE OR REPLACE FUNCTION nonstop() RETURNS integer AS $function$
          BEGIN
@@ -27,8 +27,7 @@ create extension pg_settimeout;
     $function$ LANGUAGE plpgsql;
 
 
-    SELECT nonstop()
-
+    SELECT nonstop();
 
 
 Now observe the loghere Table.
