@@ -47,6 +47,7 @@ extern int errno;
 typedef struct Task {
     char query[2048];
     int timeout;
+    int taken;
     } Task;
 
 static Task *_task;
@@ -108,6 +109,7 @@ getTask(uint32 segment) {
                  errmsg("Could not attach to DSM")));
 
     _task = (Task*) palloc ( sizeof(Task) );
+    ((Task*) dsm_segment_address(seg))->taken = 1;
     memcpy(_task, dsm_segment_address(seg), sizeof(Task));
     }
 
@@ -232,6 +234,7 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
     CurrentResourceOwner = oldowner;
     sprintf(task.query, "%s",  text_to_cstring(relname) );
     task.timeout = timeout;
+    task.taken = 0;
     memcpy( dsm_segment_address(segment), &task,  sizeof(Task));
 
     worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(segment));
@@ -253,9 +256,10 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
                 (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg(
                      "cannot start background processes without postmaster"), errhint(
                      "Kill all remaining database processes and restart the database.")));
-
+    
     /* At this point we should detach the dsm, but to prevent postgres from cleaning it up, we wont*/
    Assert(status == BGWH_STARTED);
-   sleep(1);  // Mh.. it seems to me that postgres cleans up on backend death. So we need to make sure the worker received our dsm. Horrible style but works for now
+   while ( ((Task*) dsm_segment_address(segment))->taken ==0){}
+ // Mh.. it seems to me that postgres cleans up on backend death. So we need to make sure the worker received our dsm. Horrible style but works for now
    PG_RETURN_INT32(pid);
     }
