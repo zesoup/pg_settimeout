@@ -8,8 +8,9 @@
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/shmem.h"
-
 #include "storage/shm_mq.h"
+
+#include "commands/async.h"
 
 /* these headers are used by this particular worker's code */
 #include "access/xact.h"
@@ -100,12 +101,19 @@ static void worker_spi_sighup(SIGNAL_ARGS) {
 static void
 getTask(uint32 segment) {
     dsm_segment *seg=NULL;
+    ResourceOwner oldowner;
+
+    oldowner = CurrentResourceOwner;
     CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
+
     seg = dsm_attach( segment );
     if (seg == NULL)
         ereport(ERROR,
                 (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
                  errmsg("Could not attach to DSM")));
+
+    CurrentResourceOwner = oldowner;
+
 
     _task = (Task*) palloc ( sizeof(Task) );
     ((Task*) dsm_segment_address(seg))->taken = 1;
@@ -119,7 +127,7 @@ getTask(uint32 segment) {
     memcpy(_user,  (char*) dsm_segment_address(seg)+sizeof(Task)+ _task->querysize,_task->usernamesize);
     memcpy(_database,  (char*) dsm_segment_address(seg)+sizeof(Task)+ _task->querysize + _task->usernamesize,_task->dbnamesize);
 
-    elog(LOG,"pg_settimeout launched for  %s@%s in %dms\n",
+    elog(LOG,"pg_settimeout launched for  %s@%s. Idle for %dms",
          _user, _database, _task->timeout);
     }
 
@@ -132,12 +140,14 @@ void executeQuery(char* query){
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
+    ProcessCompletedNotifies();
 }
 
 void pg_settimeout_main( Datum params ) {
 
     static Latch signalLatch;
     int rc;
+
     uint32 segment = DatumGetUInt32( params );
     StringInfoData buf;
 
@@ -187,26 +197,8 @@ void pg_settimeout_main( Datum params ) {
     }
 
 void _PG_init(void) {
-    BackgroundWorker worker;
-    if (!process_shared_preload_libraries_in_progress)
-        return;
-
-    strcpy(worker.bgw_name, NAME);
-    /* set up common data for all our workers */
-    worker.bgw_flags = BGWORKER_SHMEM_ACCESS
-                       | BGWORKER_BACKEND_DATABASE_CONNECTION;
-
-    /*worker.bgw_start_time = BgWorkerStart_RecoveryFinished;*/
-    worker.bgw_start_time = BgWorkerStart_ConsistentState;
-    worker.bgw_restart_time = BGW_NEVER_RESTART;
-    worker.bgw_main = pg_settimeout_main;
-
-    worker.bgw_notify_pid = 0;
-
-    /*
-     * Now fill in worker-specific data, and do the actual registrations.
+    /* Nothing has to be done here as no gucs or startuproutines are in place.
      */
-    //RegisterBackgroundWorker(&worker);
     }
 
 /*
@@ -215,10 +207,11 @@ void _PG_init(void) {
  */
 int bgw_attached_dsm( int* semaphore) {
     static Latch signalLatch;
-    int sleeptime = 10;
+    int sleeptime = 100;
     int roundsleft = MAX_STARTUP_ROUNDS;
+    InitLatch( &signalLatch);
 
-    while ( semaphore ==0) {
+    while ( *semaphore ==0) {
         if (roundsleft <= 0) {
             break;
             }
@@ -230,6 +223,7 @@ int bgw_attached_dsm( int* semaphore) {
         }
     return roundsleft;
     }
+
 
 
 /*
@@ -265,7 +259,6 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
     snprintf(worker.bgw_name, BGW_MAXLEN, NAME);
 
 
-
     targetuser = GetUserNameFromId( GetUserId()  );
     targetdb   = DatumGetCString(current_database(NULL)) ;
     targetquery= text_to_cstring(query);
@@ -282,7 +275,8 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
     oldowner = CurrentResourceOwner;
     CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
 
-    /* (+1 for \0 ) */
+    /* +1 for null termination. Not necessary as the length is stored aswell.
+     *  */
     task.querysize      = strlen(targetquery)+1;
     task.usernamesize   = strlen(targetuser)+1;
     task.dbnamesize     = strlen(targetdb)+1;
@@ -292,10 +286,17 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
 
     segment = dsm_create(sizeof(Task)+task.querysize +task.usernamesize +task.dbnamesize  );
 
+    /* Store the Task and append some strings */
     memcpy( dsm_segment_address(segment), &task,  sizeof(Task));
-    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) ), "%s",  targetquery );
-    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize), "%s",  targetuser );
-    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize + task.usernamesize), "%s",  targetdb );
+    sprintf(
+             (char*)dsm_segment_address(segment) + sizeof(Task)
+             , "%s",  targetquery );
+    sprintf(
+             (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize
+             , "%s",  targetuser  );
+    sprintf(
+             (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize + task.usernamesize
+             , "%s",  targetdb );
 
     CurrentResourceOwner = oldowner;
 
@@ -325,11 +326,10 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
      * BGW attaches to the memory and flips the flag.
      * TODO: Replace with postgres semaphores
      */
-    if (bgw_attached_dsm( &((Task*) dsm_segment_address(segment))->taken )) {
-        PG_RETURN_INT32(pid);
+    if (!bgw_attached_dsm( &((Task*) dsm_segment_address(segment))->taken )) {
+        elog(LOG,"pg_settimeout backgroundworker didnt access the dsm in time");
+        pid = -1;
         }
-    else {
-        PG_RETURN_INT32(-1);
-        }
-
+    dsm_detach( segment );
+    PG_RETURN_INT32(pid);
     }

@@ -7,7 +7,7 @@ Usefull for some implementations that would otherwise require an application-lev
 
 Still in Development
 
-## Example Usage:
+## Example - Timeoutception
 
 
     CREATE EXTENSION  pg_settimeout;
@@ -16,13 +16,16 @@ Still in Development
 
     CREATE OR REPLACE FUNCTION nonstop() RETURNS integer AS $function$
          BEGIN
-                INSERT INTO loghere(pid, status) VALUES ( (select pg_settimeout(
-                $$
-                UPDATE loghere SET status = 'DONE' WHERE pid=pg_backend_pid() ;      
-                $$,1000)), 'planned');
-                
+                INSERT INTO loghere(pid, status) 
+                VALUES ( (select pg_settimeout(
+                          $$
+                              UPDATE loghere 
+                              SET status = 'DONE' 
+                              WHERE pid=pg_backend_pid() ;      
+                          $$,1000)), 'planned');
+ 
                 PERFORM pg_settimeout(' select nonstop() ', 5000);
-                RETURN 1;
+                RETURN 0;
         END;
     $function$ LANGUAGE plpgsql;
 
@@ -30,7 +33,17 @@ Still in Development
     SELECT nonstop();
 
 
-Now observe the loghere table or pg_stat_activity.
+Now observe the loghere table or pg_stat_activity. It should look something like this:
+
+
+ id |  pid  | status  
+----+-------+---------
+  1 | 15255 | DONE
+  2 | 15257 | DONE
+  3 | 15259 | DONE
+  4 | 15261 | DONE
+  5 | 15263 | planned
+
 
 ## Future Updates:
 - Static workers that dont fork themselves for each job.
