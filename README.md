@@ -5,8 +5,7 @@ POC for an adaption of the setTimeout(fnc* , timeout) function of javascript.
 It basically takes an SQL statement of any kind and relays the task to a backgroundworker.
 Usefull for some implementations that would otherwise require an application-level mechanism.
 
-Currently misses many things, e.G. a proper overview of the running processes or following the 
-executing process to a database (it's currently hardcoded to postgres).
+Still in Development
 
 ## Example Usage:
 

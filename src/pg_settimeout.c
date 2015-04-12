@@ -34,30 +34,36 @@
 #include <stdio.h>
 
 #include "sys/time.h"
-#include "string.h"
 
 
-#define Buffersize 64
 #define NAME "pg_settimeout"
+#define MAX_STARTUP_ROUNDS 10
 
 PG_MODULE_MAGIC;
 
 extern int errno;
 
 typedef struct Task {
-    char query[2048];
+    int querysize;
+    int usernamesize;
+    int dbnamesize;
+
+    int userID;
     int timeout;
     int taken;
     } Task;
 
 static Task *_task;
-
+static char *_query;
+static char *_user;
+static char *_database;
 
 PG_FUNCTION_INFO_V1 (pg_settimeout);
 
 
 void _PG_init(void);
 void pg_settimeout_main( Datum params );
+int bgw_attached_dsm( int* semaphore);
 
 
 /* flags set by signal handlers */
@@ -102,7 +108,6 @@ getTask(uint32 segment) {
     dsm_segment *seg=NULL;
     CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
     seg = dsm_attach( segment );
-
     if (seg == NULL)
         ereport(ERROR,
                 (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -111,6 +116,17 @@ getTask(uint32 segment) {
     _task = (Task*) palloc ( sizeof(Task) );
     ((Task*) dsm_segment_address(seg))->taken = 1;
     memcpy(_task, dsm_segment_address(seg), sizeof(Task));
+
+    _query =     (char*) palloc(sizeof(char)*_task->querysize);
+    _user  =     (char*) palloc(sizeof(char)*_task->usernamesize);
+    _database  = (char*) palloc(sizeof(char)*_task->dbnamesize);
+
+    memcpy(_query, (char*) dsm_segment_address(seg)+sizeof(Task),_task->querysize);
+    memcpy(_user,  (char*) dsm_segment_address(seg)+sizeof(Task)+ _task->querysize,_task->usernamesize);
+    memcpy(_database,  (char*) dsm_segment_address(seg)+sizeof(Task)+ _task->querysize + _task->usernamesize,_task->dbnamesize);
+
+    elog(LOG,"pg_settimeout launched for  %s@%s in %dms\n",
+         _user, _database, _task->timeout);
     }
 
 void pg_settimeout_main( Datum params ) {
@@ -126,7 +142,6 @@ void pg_settimeout_main( Datum params ) {
     SetCurrentStatementStartTimestamp();
 
     pgstat_report_activity(STATE_RUNNING, buf.data);
-
 
     /* The latch used for this worker to manage sleep correctly */
 
@@ -149,10 +164,9 @@ void pg_settimeout_main( Datum params ) {
 
     rc = WaitLatch(&signalLatch,
                    WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                   _task->timeout*1000);
+                   _task->timeout*1);
     ResetLatch(&signalLatch);
-    BackgroundWorkerInitializeConnection("postgres", NULL);
-
+    BackgroundWorkerInitializeConnection(_database, _user );
 
     if (rc & WL_POSTMASTER_DEATH)
         proc_exit(1);
@@ -169,7 +183,7 @@ void pg_settimeout_main( Datum params ) {
     SetCurrentStatementStartTimestamp();
     SPI_connect();
     PushActiveSnapshot(GetTransactionSnapshot());
-    SPI_execute(_task->query, false, 5);
+    SPI_execute(_query, false, 5);
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
@@ -201,13 +215,34 @@ void _PG_init(void) {
     }
 
 /*
+ * See if the BGW manages to attach. Should be a matter of miliseconds.
+ * Return Error if he didnt make it in time.
+ */
+int bgw_attached_dsm( int* semaphore) {
+    static Latch signalLatch;
+    int sleeptime = 10;
+    int roundsleft = MAX_STARTUP_ROUNDS;
+
+    while ( semaphore ==0) {
+        if (roundsleft <= 0) {
+            break;
+            }
+        ResetLatch(&signalLatch);
+        WaitLatch(&signalLatch,
+                  WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+                  sleeptime);
+        roundsleft = roundsleft -1;
+        }
+    return roundsleft;
+    }
+
+
+/*
  * Dynamically launch an SPI worker.
  */
 Datum pg_settimeout(PG_FUNCTION_ARGS) {
-// CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
 
     BackgroundWorker worker;
-
     BackgroundWorkerHandle *handle;
 
     BgwHandleStatus status;
@@ -215,30 +250,61 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
     Task task;
     ResourceOwner oldowner;
     pid_t pid;
-    text       *relname = PG_GETARG_TEXT_P(0);
+
+    char* targetuser;
+    char* targetdb;
+    char* targetquery;
+
+    text       *query = PG_GETARG_TEXT_P(0);
     int 		timeout= PG_GETARG_INT32(1);
+
 
     worker.bgw_flags = BGWORKER_SHMEM_ACCESS
                        | BGWORKER_BACKEND_DATABASE_CONNECTION;
     worker.bgw_start_time = BgWorkerStart_ConsistentState;
-    worker.bgw_restart_time = -1;
+    worker.bgw_restart_time = -1; /* Never */
     worker.bgw_main = NULL; /* new worker might not have library loaded */
 
     sprintf(worker.bgw_library_name, "pg_settimeout");
     sprintf(worker.bgw_function_name, "pg_settimeout_main");
     snprintf(worker.bgw_name, BGW_MAXLEN, NAME);
-//    CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
+
+
+
+    targetuser = GetUserNameFromId( GetUserId()  );
+    targetdb   = DatumGetCString(current_database(NULL)) ;
+    targetquery= text_to_cstring(query);
+
+    /* Set up a dynamic shared memory for the Backgroundworker.
+     * It contains information about the required job.
+     *
+     * To make sure postgres will allow the backgroundworker to attach to the dsm,
+     * set the current resource owner to a name we'll use later again.
+     * Once done, reset the resource owner.
+     */
+
+
     oldowner = CurrentResourceOwner;
     CurrentResourceOwner = ResourceOwnerCreate(NULL, NAME);
-    segment = dsm_create(sizeof(Task));
-    CurrentResourceOwner = oldowner;
-    sprintf(task.query, "%s",  text_to_cstring(relname) );
+
+    /* (+1 for \0 ) */
+    task.querysize      = strlen(targetquery)+1;
+    task.usernamesize   = strlen(targetuser)+1;
+    task.dbnamesize     = strlen(targetdb)+1;
+
     task.timeout = timeout;
     task.taken = 0;
+
+    segment = dsm_create(sizeof(Task)+task.querysize +task.usernamesize +task.dbnamesize  );
+
     memcpy( dsm_segment_address(segment), &task,  sizeof(Task));
+    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) ), "%s",  targetquery );
+    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize), "%s",  targetuser );
+    sprintf( ( (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize + task.usernamesize), "%s",  targetdb );
+
+    CurrentResourceOwner = oldowner;
 
     worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(segment));
-
     /* set bgw_notify_pid so that we can use WaitForBackgroundWorkerStartup */
     worker.bgw_notify_pid = MyProcPid;
 
@@ -256,10 +322,20 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
                 (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg(
                      "cannot start background processes without postmaster"), errhint(
                      "Kill all remaining database processes and restart the database.")));
-    
+
     /* At this point we should detach the dsm, but to prevent postgres from cleaning it up, we wont*/
-   Assert(status == BGWH_STARTED);
-   while ( ((Task*) dsm_segment_address(segment))->taken ==0){}
- // Mh.. it seems to me that postgres cleans up on backend death. So we need to make sure the worker received our dsm. Horrible style but works for now
-   PG_RETURN_INT32(pid);
+    Assert(status == BGWH_STARTED);
+
+    /* Postgres will remove the dsm if nobody uses it. So we'll need to wait untill the
+     * BGW attaches to the memory and flips the flag.
+     * TODO: Replace with postgres semaphores
+     */
+
+    if (bgw_attached_dsm( &((Task*) dsm_segment_address(segment))->taken )) {
+        PG_RETURN_INT32(pid);
+        }
+    else {
+        PG_RETURN_INT32(-1);
+        }
+
     }
