@@ -19,9 +19,9 @@ Still in Development
                 INSERT INTO loghere(pid, status) VALUES ( (select pg_settimeout(
                 $$
                 UPDATE loghere SET status = 'DONE' WHERE pid=pg_backend_pid() ;      
-                $$,10)), 'planned');
+                $$,1000)), 'planned');
                 
-                PERFORM pg_settimeout(' select nonstop() ', 5);
+                PERFORM pg_settimeout(' select nonstop() ', 5000);
                 RETURN 1;
         END;
     $function$ LANGUAGE plpgsql;
@@ -30,4 +30,4 @@ Still in Development
     SELECT nonstop();
 
 
-Now observe the loghere Table.
+Now observe the loghere Table or pg_stat_activity.

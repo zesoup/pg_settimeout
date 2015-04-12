@@ -1,4 +1,4 @@
-/* contrib/pg_settimeout/pg_settimeout--1.0.sql */
+/* contrib/worker_spi/worker_spi--1.0.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION pg_settimeout" to load this file. \quit

@@ -64,6 +64,7 @@ PG_FUNCTION_INFO_V1 (pg_settimeout);
 void _PG_init(void);
 void pg_settimeout_main( Datum params );
 int bgw_attached_dsm( int* semaphore);
+void executeQuery(char* query);
 
 
 /* flags set by signal handlers */
@@ -129,6 +130,17 @@ getTask(uint32 segment) {
          _user, _database, _task->timeout);
     }
 
+void executeQuery(char* query){
+    StartTransactionCommand();
+    SetCurrentStatementStartTimestamp();
+    SPI_connect();
+    PushActiveSnapshot(GetTransactionSnapshot());
+    SPI_execute(query, false, 5);
+    SPI_finish();
+    PopActiveSnapshot();
+    CommitTransactionCommand();
+}
+
 void pg_settimeout_main( Datum params ) {
 
     static Latch signalLatch;
@@ -137,11 +149,7 @@ void pg_settimeout_main( Datum params ) {
     StringInfoData buf;
 
     initStringInfo(&buf);
-    appendStringInfo(&buf, "-");
-
     SetCurrentStatementStartTimestamp();
-
-    pgstat_report_activity(STATE_RUNNING, buf.data);
 
     /* The latch used for this worker to manage sleep correctly */
 
@@ -152,41 +160,35 @@ void pg_settimeout_main( Datum params ) {
     else {
         signalLatch = MyProc->procLatch;
         }
+
     pqsignal(SIGHUP, worker_spi_sighup);
     pqsignal(SIGTERM, worker_spi_sigterm);
 
+
     /* We're now ready to receive signals */
     BackgroundWorkerUnblockSignals();
-    getTask (segment);
 
+    getTask (segment);
+    appendStringInfo(&buf, "%s",_query);
+
+    /* Connect and Report early on, so we're listed in pg_stat_activity while waiting */
+    BackgroundWorkerInitializeConnection(_database, _user );
+    pgstat_report_appname("Backgroundworker - pg_settimeout");
+    pgstat_report_activity(STATE_IDLE, buf.data);
 
     ResetLatch(&signalLatch);
-
     rc = WaitLatch(&signalLatch,
                    WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
                    _task->timeout*1);
-    ResetLatch(&signalLatch);
-    BackgroundWorkerInitializeConnection(_database, _user );
 
     if (rc & WL_POSTMASTER_DEATH)
         proc_exit(1);
+    pgstat_report_activity(STATE_RUNNING, buf.data);
 
-    /*
-     * In case of a SIGHUP, just reload the configuration.
+    /* For now we dont care about the outcome. It may fail, but there's not alot the
+     * worker can do about it. SPI-level Errors are handled by SPI.
      */
-    if (got_sighup) {
-        got_sighup = false;
-        ProcessConfigFile (PGC_SIGHUP);
-        }
-
-    StartTransactionCommand();
-    SetCurrentStatementStartTimestamp();
-    SPI_connect();
-    PushActiveSnapshot(GetTransactionSnapshot());
-    SPI_execute(_query, false, 5);
-    SPI_finish();
-    PopActiveSnapshot();
-    CommitTransactionCommand();
+    executeQuery(_query);
 
     proc_exit(0);
     }
