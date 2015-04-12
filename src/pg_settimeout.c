@@ -25,14 +25,7 @@
 
 #include "utils/memutils.h"
 #include "storage/shm_toc.h"
-
-#include <unistd.h>
-
 #include "storage/fd.h"
-
-#include <time.h>
-#include <stdio.h>
-
 #include "sys/time.h"
 
 
@@ -53,13 +46,13 @@ typedef struct Task {
     int taken;
     } Task;
 
+
 static Task *_task;
 static char *_query;
 static char *_user;
 static char *_database;
 
 PG_FUNCTION_INFO_V1 (pg_settimeout);
-
 
 void _PG_init(void);
 void pg_settimeout_main( Datum params );
@@ -311,7 +304,7 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
     worker.bgw_notify_pid = MyProcPid;
 
     if (!RegisterDynamicBackgroundWorker(&worker, &handle))
-        PG_RETURN_NULL();
+        PG_RETURN_INT32(-1);
 
     status = WaitForBackgroundWorkerStartup(handle, &pid);
     if (status == BGWH_STOPPED)
@@ -332,7 +325,6 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
      * BGW attaches to the memory and flips the flag.
      * TODO: Replace with postgres semaphores
      */
-
     if (bgw_attached_dsm( &((Task*) dsm_segment_address(segment))->taken )) {
         PG_RETURN_INT32(pid);
         }

@@ -30,4 +30,4 @@ Still in Development
     SELECT nonstop();
 
 
-Now observe the loghere Table or pg_stat_activity.
+Now observe the loghere table or pg_stat_activity.
