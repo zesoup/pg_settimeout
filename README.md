@@ -36,13 +36,13 @@ Still in Development
 Now observe the loghere table or pg_stat_activity. It should look something like this:
 
 
- id |  pid  | status  
-----+-------+---------
-  1 | 15255 | DONE
-  2 | 15257 | DONE
-  3 | 15259 | DONE
-  4 | 15261 | DONE
-  5 | 15263 | planned
+     id |  pid  | status  
+    ----+-------+---------
+      1 | 15255 | DONE
+      2 | 15257 | DONE
+      3 | 15259 | DONE
+      4 | 15261 | DONE
+      5 | 15263 | planned
 
 
 ## Future Updates:
