@@ -1,5 +1,5 @@
 # worker_spi extension
-comment = 'Sample background worker'
-default_version = '1.0'
+comment = 'Backgroundworker for delayed tasks.'
+default_version = '1.1'
 module_pathname = '$libdir/pg_settimeout'
 relocatable = true

@@ -4,7 +4,7 @@ MODULE_big = pg_settimeout
 OBJS =  pg_settimeout.o
 
 EXTENSION = pg_settimeout
-DATA = pg_settimeout--1.0.sql
+DATA = pg_settimeout--1.1.sql
 
 ifdef USE_PGXS
 PG_CONFIG ?= pg_config

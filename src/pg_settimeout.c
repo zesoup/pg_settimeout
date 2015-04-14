@@ -44,6 +44,7 @@ typedef struct Task {
 
     int userID;
     int timeout;
+    int repeat;
     int taken;
     } Task;
 
@@ -54,9 +55,13 @@ static char *_user;
 static char *_database;
 
 PG_FUNCTION_INFO_V1 (pg_settimeout);
+PG_FUNCTION_INFO_V1 (pg_setinterval);
+
 
 void _PG_init(void);
 void pg_settimeout_main( Datum params );
+int pg_settimeout_core(text* query, int timeout, int repeat);
+dsm_segment* provide_and_fill_dsm( text* query, int timeout, int repeat ) ;
 int bgw_attached_dsm( int* semaphore);
 void executeQuery(char* query);
 
@@ -131,17 +136,17 @@ getTask(uint32 segment) {
          _user, _database, _task->timeout);
     }
 
-void executeQuery(char* query){
+void executeQuery(char* query) {
     StartTransactionCommand();
     SetCurrentStatementStartTimestamp();
     SPI_connect();
     PushActiveSnapshot(GetTransactionSnapshot());
-    SPI_execute(query, false, 5);
+    SPI_exec(query, 0);
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
     ProcessCompletedNotifies();
-}
+    }
 
 void pg_settimeout_main( Datum params ) {
 
@@ -177,22 +182,27 @@ void pg_settimeout_main( Datum params ) {
     /* Connect and Report early on, so we're listed in pg_stat_activity while waiting */
     BackgroundWorkerInitializeConnection(_database, _user );
     pgstat_report_appname("Backgroundworker - pg_settimeout");
-    pgstat_report_activity(STATE_IDLE, buf.data);
-
     ResetLatch(&signalLatch);
-    rc = WaitLatch(&signalLatch,
-                   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                   _task->timeout*1);
+    do {
+        pgstat_report_activity(STATE_IDLE, buf.data);
 
-    if (rc & WL_POSTMASTER_DEATH)
-        proc_exit(1);
-    pgstat_report_activity(STATE_RUNNING, buf.data);
+        elog(LOG,"Worker hibernates for %dms",_task->timeout);
+        rc = WaitLatch(&signalLatch,
+                       WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
+                       _task->timeout*1);
+        ResetLatch(&signalLatch);
+        if (rc & WL_POSTMASTER_DEATH)
+            proc_exit(1);
+        pgstat_report_activity(STATE_RUNNING, buf.data);
 
-    /* For now we dont care about the outcome. It may fail, but there's not alot the
-     * worker can do about it. SPI-level Errors are handled by SPI.
-     */
-    executeQuery(_query);
+        /* For now we dont care about the outcome. It may fail, but there's not alot the
+         * worker can do about it. SPI-level Errors are handled by SPI.
+         */
+        elog(LOG,"Worker woke up.\"%s\" is due.", _query);
+        executeQuery(_query);
 
+        }
+    while (_task->repeat);
     proc_exit(0);
     }
 
@@ -224,52 +234,45 @@ int bgw_attached_dsm( int* semaphore) {
     return roundsleft;
     }
 
-
-
 /*
- * Dynamically launch an SPI worker.
+ * SQL interface for settimeout.
  */
 Datum pg_settimeout(PG_FUNCTION_ARGS) {
+    text       *query = PG_GETARG_TEXT_P(0);
+    int               timeout= PG_GETARG_INT32(1);
 
-    BackgroundWorker worker;
-    BackgroundWorkerHandle *handle;
+    PG_RETURN_INT32( pg_settimeout_core(query, timeout, 0) );
+    }
+/*
+ * SQL interface for setinterval
+ */
+Datum pg_setinterval(PG_FUNCTION_ARGS) {
+    text       *query = PG_GETARG_TEXT_P(0);
+    int         timeout= PG_GETARG_INT32(1);
 
-    BgwHandleStatus status;
-    dsm_segment* segment;
-    Task task;
+    PG_RETURN_INT32( pg_settimeout_core(query, timeout, 1 ) );
+    }
+
+
+    /* Set up a dynamic shared memory for the Backgroundworker.
+        * It contains information about the required job.
+        *
+        * To make sure postgres will allow the backgroundworker to attach to the dsm,
+        * set the current resource owner to a name we'll use later again.
+        * Once done, reset the resource owner.
+        */
+dsm_segment* provide_and_fill_dsm( text* query, int timeout, int repeat ) {
     ResourceOwner oldowner;
-    pid_t pid;
+    dsm_segment* segment;
 
+    Task task;
     char* targetuser;
     char* targetdb;
     char* targetquery;
 
-    text       *query = PG_GETARG_TEXT_P(0);
-    int 		timeout= PG_GETARG_INT32(1);
-
-
-    worker.bgw_flags = BGWORKER_SHMEM_ACCESS
-                       | BGWORKER_BACKEND_DATABASE_CONNECTION;
-    worker.bgw_start_time = BgWorkerStart_ConsistentState;
-    worker.bgw_restart_time = -1; /* Never */
-    worker.bgw_main = NULL; /* new worker might not have library loaded */
-
-    sprintf(worker.bgw_library_name, "pg_settimeout");
-    sprintf(worker.bgw_function_name, "pg_settimeout_main");
-    snprintf(worker.bgw_name, BGW_MAXLEN, NAME);
-
-
     targetuser = GetUserNameFromId( GetUserId()  );
     targetdb   = DatumGetCString(current_database(NULL)) ;
     targetquery= text_to_cstring(query);
-
-    /* Set up a dynamic shared memory for the Backgroundworker.
-     * It contains information about the required job.
-     *
-     * To make sure postgres will allow the backgroundworker to attach to the dsm,
-     * set the current resource owner to a name we'll use later again.
-     * Once done, reset the resource owner.
-     */
 
 
     oldowner = CurrentResourceOwner;
@@ -283,29 +286,57 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
 
     task.timeout = timeout;
     task.taken = 0;
+    task.repeat = repeat;
 
     segment = dsm_create(sizeof(Task)+task.querysize +task.usernamesize +task.dbnamesize  );
 
     /* Store the Task and append some strings */
     memcpy( dsm_segment_address(segment), &task,  sizeof(Task));
     sprintf(
-             (char*)dsm_segment_address(segment) + sizeof(Task)
-             , "%s",  targetquery );
+        (char*)dsm_segment_address(segment) + sizeof(Task)
+        , "%s",  targetquery );
     sprintf(
-             (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize
-             , "%s",  targetuser  );
+        (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize
+        , "%s",  targetuser  );
     sprintf(
-             (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize + task.usernamesize
-             , "%s",  targetdb );
+        (char*)dsm_segment_address(segment) + sizeof(Task) + task.querysize + task.usernamesize
+        , "%s",  targetdb );
 
     CurrentResourceOwner = oldowner;
+    return segment;
+    }
+
+
+int pg_settimeout_core(text* query, int timeout, int repeat) {
+
+    BackgroundWorker worker;
+    BackgroundWorkerHandle *handle;
+    BgwHandleStatus status;
+    pid_t pid;
+
+    dsm_segment* segment;
+
+
+    worker.bgw_flags = BGWORKER_SHMEM_ACCESS
+                       | BGWORKER_BACKEND_DATABASE_CONNECTION;
+    worker.bgw_start_time = BgWorkerStart_ConsistentState;
+    worker.bgw_restart_time = -1; /* Never */
+    worker.bgw_main = NULL; /* new worker might not have library loaded */
+
+    sprintf(worker.bgw_library_name, "pg_settimeout");
+    sprintf(worker.bgw_function_name, "pg_settimeout_main");
+    snprintf(worker.bgw_name, BGW_MAXLEN, NAME);
+
+
+    segment = provide_and_fill_dsm(query, timeout, repeat);
+
 
     worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(segment));
     /* set bgw_notify_pid so that we can use WaitForBackgroundWorkerStartup */
     worker.bgw_notify_pid = MyProcPid;
 
     if (!RegisterDynamicBackgroundWorker(&worker, &handle))
-        PG_RETURN_INT32(-1);
+        return -1;
 
     status = WaitForBackgroundWorkerStartup(handle, &pid);
     if (status == BGWH_STOPPED)
@@ -331,5 +362,5 @@ Datum pg_settimeout(PG_FUNCTION_ARGS) {
         pid = -1;
         }
     dsm_detach( segment );
-    PG_RETURN_INT32(pid);
+    return pid;
     }

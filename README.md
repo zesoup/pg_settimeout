@@ -1,9 +1,16 @@
 # pg_settimeout
-POC for an adaption of the setTimeout(fnc* , timeout) function of javascript.
+An adaption of the setTimeout(fnc* , timeout) function of javascript.
 (tested with pg9.4)
 
 It basically takes an SQL statement of any kind and relays the task to a backgroundworker.
 Usefull for some implementations that would otherwise require an application-level mechanism.
+
+Provides two functions:
+    pid pg_settimeout (query, timeout)
+    pid pg_setinterval(query, timeout)
+
+pg_settimeout will take a query and orders a backgroundworker to execute the query after <timeout>ms have passed.
+pg_setinterval will do the same, but repeat the task forever.
 
 Still in Development
 

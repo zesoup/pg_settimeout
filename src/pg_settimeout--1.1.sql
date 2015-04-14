@@ -8,7 +8,7 @@ RETURNS pg_catalog.int4 STRICT
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
 
-CREATE FUNCTION pg_setinterval(pg_catalog.text, pg_catalog.int4, pg_catalog.int4)
+CREATE FUNCTION pg_setinterval(pg_catalog.text, pg_catalog.int4)
 RETURNS pg_catalog.int4 STRICT
 AS 'MODULE_PATHNAME'
 LANGUAGE C;
