@@ -53,5 +53,4 @@ Now observe the loghere table or pg_stat_activity. It should look something like
 
 
 ## Future Updates:
-- Static workers that dont fork themselves for each job.
 - C-Level mechanisms to ensure an interval isnt delayed by executiontime.
