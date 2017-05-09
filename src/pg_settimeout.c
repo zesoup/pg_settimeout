@@ -189,7 +189,7 @@ void pg_settimeout_main( Datum params ) {
         elog(LOG,"Worker hibernates for %dms",_task->timeout);
         rc = WaitLatch(&signalLatch,
                        WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                       _task->timeout*1);
+                       _task->timeout*1, NULL);
         ResetLatch(&signalLatch);
         if (rc & WL_POSTMASTER_DEATH)
             proc_exit(1);
@@ -228,7 +228,7 @@ int bgw_attached_dsm( int* semaphore) {
         ResetLatch(&signalLatch);
         WaitLatch(&signalLatch,
                   WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH,
-                  sleeptime);
+                  sleeptime,NULL);
         roundsleft = roundsleft -1;
         }
     return roundsleft;
@@ -270,7 +270,7 @@ dsm_segment* provide_and_fill_dsm( text* query, int timeout, int repeat ) {
     char* targetdb;
     char* targetquery;
 
-    targetuser = GetUserNameFromId( GetUserId()  );
+    targetuser = GetUserNameFromId( GetUserId() , false );
     targetdb   = DatumGetCString(current_database(NULL)) ;
     targetquery= text_to_cstring(query);
 
@@ -288,7 +288,7 @@ dsm_segment* provide_and_fill_dsm( text* query, int timeout, int repeat ) {
     task.taken = 0;
     task.repeat = repeat;
 
-    segment = dsm_create(sizeof(Task)+task.querysize +task.usernamesize +task.dbnamesize  );
+    segment = dsm_create(sizeof(Task)+task.querysize +task.usernamesize +task.dbnamesize,0  );
 
     /* Store the Task and append some strings */
     memcpy( dsm_segment_address(segment), &task,  sizeof(Task));
@@ -321,7 +321,7 @@ int pg_settimeout_core(text* query, int timeout, int repeat) {
                        | BGWORKER_BACKEND_DATABASE_CONNECTION;
     worker.bgw_start_time = BgWorkerStart_ConsistentState;
     worker.bgw_restart_time = -1; /* Never */
-    worker.bgw_main = NULL; /* new worker might not have library loaded */
+    //worker.bgw_main = NULL; /* new worker might not have library loaded */
 
     sprintf(worker.bgw_library_name, "pg_settimeout");
     sprintf(worker.bgw_function_name, "pg_settimeout_main");
