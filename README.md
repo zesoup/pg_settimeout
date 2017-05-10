@@ -8,8 +8,8 @@ Usefull for some implementations that would otherwise require an application-lev
 Provides two functions:
 
 
-*	pid pg_settimeout (query, timeout) : will execute the query after <timeout>ms .
-*       pid pg_setinterval(query, timeout) : will do the same, but repeat the task forever.
+* pid pg_settimeout (query, timeout) : will execute the query after <timeout>ms .
+* pid pg_setinterval(query, timeout) : will do the same, but repeat the task forever.
 
 
 Still in Development
