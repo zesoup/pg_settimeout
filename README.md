@@ -1,6 +1,6 @@
 # pg_settimeout
 An adaption of the setTimeout(fnc* , timeout) function of javascript.
-(tested with pg9.6)
+(tested with pg9.6/10/11)
 
 It basically takes an SQL statement of any kind and relays the task to a backgroundworker.
 Useful for some implementations that would otherwise require an application-level mechanism.

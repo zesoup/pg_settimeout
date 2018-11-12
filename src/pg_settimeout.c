@@ -180,7 +180,12 @@ void pg_settimeout_main( Datum params ) {
     appendStringInfo(&buf, "%s",_query);
 
     /* Connect and Report early on, so we're listed in pg_stat_activity while waiting */
-    BackgroundWorkerInitializeConnection(_database, _user );
+#if PG_VERSION_NUM >= 110000
+    uint32 FLAGS = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION ;
+    BackgroundWorkerInitializeConnection(_database, _user, FLAGS );
+#else
+    BackgroundWorkerInitializeConnection(_database, _user);
+#endif
     pgstat_report_appname("Backgroundworker - pg_settimeout");
     ResetLatch(&signalLatch);
     do {
