@@ -12,8 +12,6 @@ Provides two functions:
 * pid pg_setinterval(query, timeout) : will do the same, but repeat the task forever.
 
 
-Still in Development
-
 ## Example - Timeoutception
 
 
